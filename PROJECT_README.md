@@ -363,6 +363,11 @@ The project is easiest to validate in this order:
 - The core dashboard tables can still be used without it
 
 ## Summary
+postgress db before 60 SEC
+<img width="1068" height="695" alt="data_before_60" src="https://github.com/user-attachments/assets/5439985a-d9e5-4491-acfd-2ff22d0aebc3" />
+postgress db after 60 SEC
+<img width="921" height="728" alt="data_after60" src="https://github.com/user-attachments/assets/ab778f74-92f8-429b-9580-e910d8c29eb4" />
+
 
 This project is a Dockerized crypto data pipeline with:
 
