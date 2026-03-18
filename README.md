@@ -14,6 +14,7 @@ Quick start
 3. Run streaming job: see `processing/spark_streaming_job.py` for the spark-submit command.
 4. Airflow UI: http://localhost:8088 (admin/admin_password by default).
 5. Metabase UI: http://localhost:3000 (first-time setup in browser).
+6. project is built locally
 
 Current runtime behavior
 - Ingestion polls CoinGecko every 60 seconds.
