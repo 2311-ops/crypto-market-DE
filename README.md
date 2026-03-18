@@ -4,7 +4,6 @@ Start here:
 - [PROJECT_README.md](./PROJECT_README.md) for the full architecture, runtime behavior, data flow, dashboards, and troubleshooting.
 
 Quick links:
-- [RUNBOOK.md](./RUNBOOK.md)
 - [visualization/dashboards/powerbi_setup.md](./visualization/dashboards/powerbi_setup.md)
 - [visualization/dashboards/powerbi_queries.sql](./visualization/dashboards/powerbi_queries.sql)
 
