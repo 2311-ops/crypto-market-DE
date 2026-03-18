@@ -1,0 +1,186 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: ${PROJECT_NAME}_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - crypto_network
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: ${PROJECT_NAME}_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: ${KAFKA_BROKER_ID}
+      KAFKA_ZOOKEEPER_CONNECT: ${KAFKA_ZOOKEEPER_CONNECT}
+      KAFKA_LISTENERS: ${KAFKA_LISTENERS}
+      KAFKA_ADVERTISED_LISTENERS: ${KAFKA_ADVERTISED_LISTENERS}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: ${KAFKA_LISTENER_SECURITY_PROTOCOL_MAP}
+      KAFKA_INTER_BROKER_LISTENER_NAME: ${KAFKA_INTER_BROKER_LISTENER_NAME}
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR}
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    networks:
+      - crypto_network
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 20s
+
+  ingestion:
+    build: ./ingestion
+    container_name: ${PROJECT_NAME}_ingestion
+    depends_on:
+      kafka:
+        condition: service_healthy
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - ${NETWORK_NAME}
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: ${PROJECT_NAME}_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./storage/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - crypto_network
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-02T17-50-41Z
+    container_name: ${PROJECT_NAME}_minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":${MINIO_CONSOLE_PORT}"
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - crypto_network
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: ${PROJECT_NAME}_metabase
+    depends_on:
+      - postgres
+    ports:
+      - "${METABASE_PORT}:3000"
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+      MB_SITE_URL: http://localhost:${METABASE_PORT}
+    volumes:
+      - metabase_data:/metabase-data
+    networks:
+      - crypto_network
+
+  airflow:
+    image: apache/airflow:2.9.1
+    container_name: ${PROJECT_NAME}_airflow
+    depends_on:
+      - postgres
+      - kafka
+    environment:
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: ${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
+      AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW__CORE__LOAD_EXAMPLES}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+      AIRFLOW__WEBSERVER__WEB_SERVER_PORT: ${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}
+      AIRFLOW__API__AUTH_BACKENDS: ${AIRFLOW__API__AUTH_BACKENDS}
+      AIRFLOW_UID: ${AIRFLOW_UID}
+      AIRFLOW_GID: ${AIRFLOW_GID}
+    command: >
+      bash -c "
+      pip install --no-cache-dir kafka-python-ng==2.2.3 &&
+      airflow db init &&
+      airflow db migrate &&
+      airflow users create --username ${AIRFLOW_ADMIN_USERNAME} --firstname Admin --lastname User --role Admin --email ${AIRFLOW_ADMIN_EMAIL} --password ${AIRFLOW_ADMIN_PASSWORD} || true &&
+      airflow scheduler &
+      exec airflow webserver"
+    volumes:
+      - ./orchestration/dags:/opt/airflow/dags
+      - ./ingestion:/opt/airflow/ingestion
+      - ./processing:/opt/airflow/processing
+      - /var/run/docker.sock:/var/run/docker.sock
+      - airflow_logs:/opt/airflow/logs
+    ports:
+      - "8088:8080"
+    networks:
+      - crypto_network
+
+  spark-master:
+    image: docker.io/apache/spark:3.5.2
+    container_name: ${PROJECT_NAME}_spark_master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_HOST=${SPARK_MASTER_HOST}
+      - SPARK_MASTER_PORT_NUMBER=${SPARK_MASTER_PORT}
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - ALLOW_EMPTY_PASSWORD=yes
+    ports:
+      - "${SPARK_MASTER_PORT}:7077"
+      - "${SPARK_UI_PORT}:8080"
+    networks:
+      - crypto_network
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    volumes:
+      - .:/app
+
+  spark-worker:
+    image: docker.io/apache/spark:3.5.2
+    container_name: ${PROJECT_NAME}_spark_worker
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
+      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY}
+      - ALLOW_EMPTY_PASSWORD=yes
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    networks:
+      - crypto_network
+    volumes:
+      - ./processing:/opt/bitnami/spark/jobs
+
+networks:
+  crypto_network:
+    driver: bridge
+
+volumes:
+  zookeeper_data:
+  kafka_data:
+  postgres_data:
+  minio_data:
+  metabase_data:
+  airflow_logs:
